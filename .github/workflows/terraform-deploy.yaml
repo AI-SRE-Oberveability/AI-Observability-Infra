@@ -1,0 +1,134 @@
+name: Terraform foundation delivery
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Plan first; apply requires its reviewed fingerprint
+        type: choice
+        options: [plan, apply]
+        default: plan
+        required: true
+      reviewed_plan_sha256:
+        description: Required for apply; copy the fingerprint from a reviewed plan at this same source commit
+        type: string
+        required: false
+permissions:
+  contents: read
+concurrency:
+  group: terraform-foundation
+  cancel-in-progress: false
+env:
+  OPERATION: ${{ inputs.operation }}
+  REVIEWED_PLAN_SHA256: ${{ inputs.reviewed_plan_sha256 }}
+  AZURE_DEPLOYMENT_ENABLED: ${{ vars.AZURE_DEPLOYMENT_ENABLED }}
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Refuse disabled or unapproved execution before OIDC access
+        run: python scripts/deployment_guard.py dispatch
+  terraform:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: ${{ inputs.operation == 'apply' && 'azure-lab-apply' || 'azure-lab-plan' }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_IN_AUTOMATION: 'true'
+      TF_INPUT: 'false'
+      ARM_USE_OIDC: 'true'
+      ARM_USE_AZUREAD: 'true'
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_STATE_RESOURCE_GROUP: ${{ vars.TF_STATE_RESOURCE_GROUP }}
+      TF_STATE_STORAGE_ACCOUNT: ${{ vars.TF_STATE_STORAGE_ACCOUNT }}
+      TF_STATE_CONTAINER: ${{ vars.TF_STATE_CONTAINER }}
+      LAB_RESOURCE_GROUP: ${{ vars.LAB_RESOURCE_GROUP }}
+      AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+      LAB_EXPIRES_ON: ${{ vars.LAB_EXPIRES_ON }}
+      AZURE_MONTHLY_BUDGET: ${{ vars.AZURE_MONTHLY_BUDGET }}
+      AZURE_BUDGET_CURRENCY: ${{ vars.AZURE_BUDGET_CURRENCY }}
+      TF_VAR_subscription_id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_tenant_id: ${{ vars.AZURE_TENANT_ID }}
+      TF_VAR_resource_group_name: ${{ vars.LAB_RESOURCE_GROUP }}
+      TF_VAR_location: ${{ vars.AZURE_LOCATION }}
+      TF_VAR_expires_on: ${{ vars.LAB_EXPIRES_ON }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Validate all personal target and budget inputs before login
+        run: python scripts/deployment_guard.py targets
+      - name: Keep Terraform working data on the ephemeral runner
+        shell: bash
+        run: echo "TF_DATA_DIR=$RUNNER_TEMP/tfdata-foundation" >> "$GITHUB_ENV"
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: '1.17.1'
+          terraform_wrapper: false
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Match the authenticated Azure context to the confirmed target
+        run: az account show --output json | python scripts/deployment_guard.py context
+      - name: Initialize dedicated remote state using Entra OIDC
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          terraform -chdir=foundation init -input=false -lockfile=readonly \
+            -backend-config="resource_group_name=$TF_STATE_RESOURCE_GROUP" \
+            -backend-config="storage_account_name=$TF_STATE_STORAGE_ACCOUNT" \
+            -backend-config="container_name=$TF_STATE_CONTAINER" \
+            -backend-config="key=ai-sre-observability/foundation.tfstate" \
+            -backend-config="use_oidc=true" -backend-config="use_azuread_auth=true"
+          terraform -chdir=foundation validate
+      - name: Generate private plan and verify review fingerprint
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          if ! terraform -chdir=foundation plan -input=false -lock-timeout=5m \
+            -out="$RUNNER_TEMP/foundation.plan" > "$RUNNER_TEMP/foundation-output.txt" 2>&1; then
+            echo 'Terraform plan failed. Check the approved target, state access and scoped RBAC; raw output is not published.'
+            exit 1
+          fi
+          terraform -chdir=foundation show -json "$RUNNER_TEMP/foundation.plan" > "$RUNNER_TEMP/foundation.json"
+          python scripts/plan_review.py "$RUNNER_TEMP/foundation.json"
+      - name: Apply only the exact reviewed saved plan
+        if: inputs.operation == 'apply'
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          if ! terraform -chdir=foundation apply -input=false -lock-timeout=5m \
+            "$RUNNER_TEMP/foundation.plan" > "$RUNNER_TEMP/foundation-output.txt" 2>&1; then
+            echo 'Terraform apply failed. Review state and scoped RBAC through the approved operator process; raw output is not published.'
+            exit 1
+          fi
+          echo 'Applied the reviewed resource-group foundation plan.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove ephemeral plan material
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/foundation.plan" "$RUNNER_TEMP/foundation.json" "$RUNNER_TEMP/foundation-output.txt"
