@@ -1,0 +1,12 @@
+{
+  "github_owner": "javedkumail",
+  "repository_visibility": "public",
+  "tenant_id": "<PERSONAL_AZURE_TENANT_ID>",
+  "subscription_id": "<PERSONAL_AZURE_SUBSCRIPTION_ID>",
+  "region": "<AZURE_REGION>",
+  "monthly_budget": "<MONTHLY_BUDGET_AND_CURRENCY>",
+  "dynatrace_profile": "managed-lab",
+  "managed_entitlement": "<MANAGED_LICENCE_AND_INSTALLER_STATUS>",
+  "managed_cluster_version": "<MANAGED_CLUSTER_VERSION>",
+  "model": "<MODEL_PROVIDER_DEPLOYMENT_AND_QUOTA>"
+}
