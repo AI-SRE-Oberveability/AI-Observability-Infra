@@ -1,0 +1,37 @@
+name: CI
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Install hash-locked CI dependencies
+        run: python -m pip install --require-hashes -r requirements-ci.txt
+      - run: ruff check --select E4,E7,E9,F,I,UP scripts tests
+      - run: ruff format --check scripts tests
+      - name: Cloud deployment safety tests
+        run: python -m unittest discover -s tests -v
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: '1.17.1'
+          terraform_wrapper: false
+      - run: terraform fmt -check -recursive
+      - name: Initialize without state or cloud authentication
+        run: terraform -chdir=foundation init -backend=false -input=false -lockfile=readonly
+      - run: terraform -chdir=foundation validate
+      - name: Reject invalid scope using a mocked provider
+        run: terraform -chdir=foundation test
