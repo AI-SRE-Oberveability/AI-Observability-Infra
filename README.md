@@ -2,7 +2,7 @@
 
 Status: design only. No Terraform apply, subscription discovery, Azure login or cloud deployment has run. Unknown values are in `personal-targets.example.json`. These must be matched to the user's exact personal account before any cloud operation; cached accounts are not authorization.
 
-Terraform is the user's confirmed Azure IaC choice. Verified public repository: `javedkumail/AI-Observability-Infra`; initial source publication tracked in the lab evidence. Follow the lab's engineering standards for module boundaries, provider locks, protected state, checks and concrete plan review. Helm/Kubernetes manifests remain with the owning workload/observability repositories.
+Terraform is the user's confirmed Azure IaC choice. Verified public repository: `AI-SRE-Oberveability/AI-Observability-Infra`; reviewed source is published under the organization; initial receipts remain in the lab evidence. Follow the lab's engineering standards for module boundaries, provider locks, protected state, checks and concrete plan review. Helm/Kubernetes manifests remain with the owning workload/observability repositories.
 
 Bootstrap with the confirmed personal identity creates a dedicated state resource group, private Azure Blob state storage and narrowly scoped CI identity/federation. Bootstrap owns these resources; ongoing component states cannot create their own prerequisites. Record backend ownership and recovery before handing routine changes to OIDC identities.
 
